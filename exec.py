@@ -97,7 +97,7 @@ def analisar(df: pd.DataFrame) -> tuple[dict, list[str]]:
     # ── Maiores medos (múltipla escolha separada por vírgula) ──
     todos_medos = []
     for val in df["medos"].dropna():
-        todos_medos.extend([m.strip() for m in val.split(",")])
+        todos_medos.extend([m.strip() for m in str(val).split(",") if m.strip()])
     r["medos"] = dict(Counter(todos_medos).most_common())
     log.append("😰  Medos no processo seletivo contabilizados.")
 
@@ -111,9 +111,9 @@ def analisar(df: pd.DataFrame) -> tuple[dict, list[str]]:
 
     # ── Preparo técnico (1–5): média, mediana, desvio ──
     serie_pt = pd.to_numeric(df["preparo_tecnico"], errors="coerce").dropna()
-    r["preparo_media"]   = round(float(serie_pt.mean()), 2)
-    r["preparo_mediana"] = float(serie_pt.median())
-    r["preparo_desvio"]  = round(float(serie_pt.std()), 2)
+    r["preparo_media"]   = round(float(serie_pt.mean()), 2) if len(serie_pt) else 0.0
+    r["preparo_mediana"] = float(serie_pt.median()) if len(serie_pt) else 0.0
+    r["preparo_desvio"]  = round(float(serie_pt.std()), 2) if len(serie_pt) else 0.0
     r["preparo_dist"]    = serie_pt.value_counts().sort_index().to_dict()
     log.append(
         f"📈  Preparo técnico — média: {r['preparo_media']}, "
@@ -129,12 +129,36 @@ def analisar(df: pd.DataFrame) -> tuple[dict, list[str]]:
     log.append(f"💻  {pct_plat}% usariam a plataforma.")
 
     # ── Investimento mensal ──
-    r["investimento"] = df["investimento_mensal"].value_counts().to_dict()
+    inv_series = df["investimento_mensal"].dropna().astype(str).str.strip()
+    inv_series = inv_series[inv_series.str.len() > 0]
+    r["investimento"] = inv_series.value_counts().to_dict()
     log.append("💰  Disposição de investimento mensal calculada.")
 
-    # ── Funcionalidade mais valiosa ──
-    r["funcionalidade"] = df["funcionalidade_valiosa"].value_counts().to_dict()
-    log.append("⭐  Funcionalidades mais valorizadas identificadas.")
+    # ── Faixa de preço mais adequada (moda) ──
+    if len(inv_series):
+        vc = inv_series.value_counts()
+        r["faixa_preco_adequada"] = str(vc.idxmax())
+        r["faixa_preco_qtd"]      = int(vc.max())
+        r["faixa_preco_pct"]      = round(int(vc.max()) / len(df) * 100, 1)
+    else:
+        r["faixa_preco_adequada"] = "—"
+        r["faixa_preco_qtd"]      = 0
+        r["faixa_preco_pct"]      = 0.0
+    log.append(f"🏷️  Faixa de preço mais adequada: {r['faixa_preco_adequada']} ({r['faixa_preco_pct']}%).")
+
+    # ── Atributos mais valorizados (funcionalidade_valiosa) ──
+    attrs = []
+    for val in df["funcionalidade_valiosa"].dropna():
+        partes = [p.strip() for p in re.split(r"[;,]", str(val)) if p.strip()]
+        attrs.extend(partes if partes else [str(val).strip()])
+    attrs = [a for a in attrs if a and a.lower() not in {"nan", "none"}]
+    r["atributos_valorizados"] = dict(Counter(attrs).most_common())
+    r["atributo_top1"]     = next(iter(r["atributos_valorizados"]), "—")
+    r["atributo_top1_qtd"] = r["atributos_valorizados"].get(r["atributo_top1"], 0)
+    r["atributo_top1_pct"] = round(r["atributo_top1_qtd"] / len(df) * 100, 1) if len(df) else 0.0
+    # mantém compatibilidade com código antigo
+    r["funcionalidade"] = r["atributos_valorizados"]
+    log.append(f"⭐  Atributo top 1: {r['atributo_top1']} ({r['atributo_top1_pct']}%).")
 
     log.append("✅  Análise concluída com sucesso.")
     return r, log
@@ -147,8 +171,7 @@ def analisar(df: pd.DataFrame) -> tuple[dict, list[str]]:
 def gerar_relatorio(df: pd.DataFrame, r: dict, caminho_saida: str) -> None:
     """Salva um relatório formatado em .txt."""
 
-    sep  = "=" * 60
-    sep2 = "-" * 60
+    sep = "=" * 60
 
     def secao(titulo):
         return f"\n{sep}\n  {titulo.upper()}\n{sep}\n"
@@ -196,8 +219,8 @@ def gerar_relatorio(df: pd.DataFrame, r: dict, caminho_saida: str) -> None:
 
     # Preparo técnico
     linhas.append(secao("7. Preparo Técnico (Escala 1–5)"))
-    linhas.append(item("Média",   r["preparo_media"]))
-    linhas.append(item("Mediana", r["preparo_mediana"]))
+    linhas.append(item("Média",        r["preparo_media"]))
+    linhas.append(item("Mediana",      r["preparo_mediana"]))
     linhas.append(item("Desvio padrão", r["preparo_desvio"]))
     linhas.append(f"\n  Distribuição das notas:\n")
     for nota, qtd in r["preparo_dist"].items():
@@ -215,10 +238,15 @@ def gerar_relatorio(df: pd.DataFrame, r: dict, caminho_saida: str) -> None:
     for k, v in sorted(r["investimento"].items(), key=lambda x: -x[1]):
         linhas.append(item(k, f"{v} resp. ({round(v/r['total_respostas']*100,1)}%)"))
 
-    # Funcionalidade
-    linhas.append(secao("10. Funcionalidade Mais Valiosa"))
-    for k, v in sorted(r["funcionalidade"].items(), key=lambda x: -x[1]):
-        linhas.append(item(k, f"{v} resp."))
+    # Faixa mais adequada
+    linhas.append(secao("10. Faixa de Preço Mais Adequada (Recomendação)"))
+    linhas.append(item("Faixa recomendada", r.get("faixa_preco_adequada", "—")))
+    linhas.append(item("Aderência", f"{r.get('faixa_preco_pct', 0)}% ({r.get('faixa_preco_qtd', 0)} resp.)"))
+
+    # Atributos valorizados
+    linhas.append(secao("11. Atributos/Funcionalidades Mais Valorizados"))
+    for k, v in list(r.get("atributos_valorizados", {}).items())[:12]:
+        linhas.append(item(k, f"{v} resp. ({round(v/r['total_respostas']*100,1)}%)"))
 
     # Conclusão
     linhas.append(secao("Conclusão"))
@@ -228,6 +256,9 @@ def gerar_relatorio(df: pd.DataFrame, r: dict, caminho_saida: str) -> None:
         f"  {r['preparo_media']}/5 preparados tecnicamente para o mercado.\n"
         f"  {r['plataforma_pct_sim']}% utilizariam a plataforma proposta, e\n"
         f"  {r['estagio_pct_sim']}% já atuam na área ou possuem estágio.\n"
+        f"\n"
+        f"  Faixa de preço mais adequada (moda): {r.get('faixa_preco_adequada', '—')}.\n"
+        f"  Atributo mais valorizado: {r.get('atributo_top1', '—')}.\n"
     )
     linhas.append(sep + "\n")
     linhas.append("  Relatório gerado automaticamente pelo sistema Ryzen Analyzer.\n")
